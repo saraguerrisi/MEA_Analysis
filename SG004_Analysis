@@ -1,0 +1,356 @@
+
+rm(list=objects())
+library(tidyverse)
+library(stringr)  
+library(dplyr) 
+library(ggfortify)
+library(agricolae)
+library(cowplot)
+library(readr)
+library(ggsignif)
+library(pheatmap)
+library(rstatix)
+library(ggpubr)
+
+
+#EXTRACTING CSV---------------------------------------------------------------------------------------------------------------------
+
+# Set the directory path where the CSV files are located
+
+dir_path <- "C:/Users/k2478006/OneDrive - King's College London/bit.bio/Analysis/SG004_MEA/Input"
+
+dir_save <- "C:/Users/k2478006/OneDrive - King's College London/bit.bio/Analysis/SG004_MEA/Output"
+
+# Get a list of all CSV files in the directory
+
+file_list <- list.files(dir_path, pattern ="\\.csv$", full.names = TRUE)
+
+
+
+# Loop through all files in the directory
+
+for (file_path in file_list) {
+  
+  # Read the CSV file into a data frame
+  
+  df <- read.csv(file_path, skip = 121) # This value is how many rows should be skipped in the original file
+  
+  # *may vary depending on how many notes you include in the original recording*
+  
+  
+  
+  # Extract rows 122 to 167 and write to a new CSV file
+  
+  df_subset <- df[1:45, ]
+  
+  new_file_name <- paste0("subset_", basename(file_path))
+  
+  new_file_path <- file.path(dir_save, new_file_name)
+  
+  write_csv(df_subset, new_file_path)
+  
+}
+
+
+#CREATING DATA FRAME---------------------------------------------------------------------------------------------------------------------
+
+#Set working directory 
+
+Path_to_working_directory <- "C:/Users/k2478006/OneDrive - King's College London/bit.bio/Analysis/SG004_MEA/Output"
+setwd(Path_to_working_directory)
+
+
+#Extract name of data set
+Name_of_dataset <- gsub(".*/","", Path_to_working_directory)
+
+#Lists CSV files
+list_of_files <- list.files(pattern="*.csv")
+
+#Creates new data frame
+raw_data <- read_csv(list_of_files, id = "file_name", show_col_types = FALSE)
+
+
+#Extracting day and plate from file 
+raw_data$day <- as.numeric(str_extract(raw_data$file_name, '(?<=DIV)\\d+'))
+
+
+
+#PLOT---------------------------------------------------------------------------------------------------------------------
+
+
+#MEAN FIRING RATE---------------------------------------------------------------------------------------------------
+#extracting firing rate and condition and then combining together
+Firing_rate_data <- raw_data %>%
+  filter(Well.Averages == "Mean Firing Rate (Hz)") %>%
+  mutate(across(-c(1,2,27), as.numeric, na.rm = TRUE)) %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Firing_rate")
+
+Condition <- raw_data %>%
+  filter(Well.Averages == "Treatment/ID") %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Condition")
+
+firingratedata_with_condition <- left_join(Firing_rate_data, Condition, by = c("file_name", "well_ID", "day"))
+
+firingratedata_with_condition_av_sd <- firingratedata_with_condition %>%
+  group_by(Condition, day)%>%
+  mutate(Firing_rate_average=mean(Firing_rate),
+         standard_deviation=sd(Firing_rate))
+
+#stats
+
+#Testing normality of data set
+shapiro_test_result <- shapiro.test(firingratedata_with_condition_av_sd$Firing_rate)  
+
+
+MFR_analysis <- firingratedata_with_condition_av_sd %>% #if not normally distributed, then the parameter is converted to its logarithmic form 
+  drop_na(Firing_rate) %>% #removes 0s
+  filter(is.finite(Firing_rate)) 
+
+MFR_analysis$day <- as.factor(MFR_analysis$day)
+#ANOVA for all variables wanting to analyse
+MFR_ANOVA <- lm(Firing_rate~ day * Condition, data = MFR_analysis)  
+
+Diagnostic_plot <- autoplot(MFR_ANOVA, smooth.colour = NA) 
+print(Diagnostic_plot)
+
+
+anova_result <- anova(MFR_ANOVA)
+summary_result <- summary(aov(MFR_ANOVA))
+
+
+print(anova_result)
+print(summary_result)
+
+
+stat.test_reg <- firingratedata_with_condition_av_sd %>%
+  group_by(Condition) %>%
+  anova_test(value = Firing_rate,
+             effect.size = "ges") %>%
+  adjust_pvalue(p.col = "p",
+                method = "BH",
+                output.col = "FDR") %>% as.data.frame()
+
+
+#plotting
+
+ggplot(firingratedata_with_condition_av_sd, aes(x=day, colour = Condition))+
+  geom_line(aes(y=Firing_rate_average), size = 0.75)+
+  #geom_ribbon(aes(ymin=Firing_rate_average-standard_deviation, ymax=Firing_rate_average+standard_deviation, fill=Condition), color=NA, alpha=0.3)
+  geom_point(aes(y=Firing_rate, shape = Condition))+
+  labs(x = "DIV",
+       y = "Mean Firing Rate (Hz)",
+       title = "Mean Firing Rate")
+ 
+
+
+
+#HEATMAP----------------------------------------------------------------------------------------------------
+Firing_rate_data <- raw_data %>%
+  filter(Well.Averages == "Mean Firing Rate (Hz)") %>%
+  mutate(across(-c(1,2,27), as.numeric, na.rm = TRUE)) %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Firing_rate")
+
+Condition <- raw_data %>%
+  filter(Well.Averages == "Treatment/ID") %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Condition")
+
+firingratedata_with_condition <- left_join(Firing_rate_data, Condition, by = c("file_name", "well_ID", "day"))
+
+firingratedata_with_condition_av_sd <- firingratedata_with_condition %>%
+  group_by(Condition, day)%>%
+  mutate(Firing_rate_average=mean(Firing_rate),
+         standard_deviation=sd(Firing_rate))
+
+heatmap_1 <- firingratedata_with_condition_av_sd[-c(1,2,4,5,6,9)] 
+
+heatmap_2 <- heatmap_1[!duplicated(heatmap_1$Firing_rate_average), ]
+
+heatmap_final <- heatmap_2 %>%
+  pivot_wider(names_from = Condition , values_from = Firing_rate_average) %>%
+  group_by(day) 
+
+heatmap_final_2 <- heatmap_final[-c(1)]
+row.names(heatmap_final_2) <- c("DIV9", "DIV13", "DIV14", "DIV15", "DIV16", "DIV17", "DIV18", "DIV19", "DIV20", "DIV21", "DIV22", "DIV23", "DIV24", "DIV25", "DIV26", "DIV27")
+
+pheatmap(as.matrix(heatmap_final_2), cluster_rows = FALSE, main="Mean Firing Rate (Hz)")
+
+
+#NUMBER OF BURSTS---------------------------------------------------------------------------------------------------
+NUmber_of_Bursts_data <- raw_data %>%
+  filter(Well.Averages == "Number of Bursts") %>%
+  mutate(across(-c(1,2,27), as.numeric, na.rm = TRUE)) %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "NUmber_of_Bursts")
+
+Condition <- raw_data %>%
+  filter(Well.Averages == "Treatment/ID") %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Condition")
+
+Number_of_Bursts_with_condition <- left_join(NUmber_of_Bursts_data, Condition, by = c("file_name", "well_ID", "day"))
+
+Number_of_Bursts_with_condition_av_sd <- Number_of_Bursts_with_condition %>%
+  group_by(Condition, day)%>%
+  mutate(Bursts_average=mean(NUmber_of_Bursts),
+         standard_deviation=sd(NUmber_of_Bursts))
+
+
+#Testing normality of data set
+shapiro_test_result <- shapiro.test(Number_of_Bursts_with_condition_av_sd$NUmber_of_Bursts)  
+
+
+NOB_analysis <- Number_of_Bursts_with_condition_av_sd %>% #if not normally distributed, then the parameter is converted to its logarithmic form 
+  drop_na(NUmber_of_Bursts) %>% #removes 0s
+  filter(is.finite(NUmber_of_Bursts)) 
+
+NOB_analysis$day <- as.factor(NOB_analysis$day)
+#ANOVA for all variables wanting to analyse
+NOB_ANOVA <- lm(NUmber_of_Bursts~ day * Condition, data = NOB_analysis)  
+
+Diagnostic_plot <- autoplot(NOB_ANOVA, smooth.colour = NA) 
+print(Diagnostic_plot)
+
+
+anova_result <- anova(NOB_ANOVA)
+summary_result <- summary(aov(NOB_ANOVA))
+
+
+print(anova_result)
+print(summary_result)
+
+
+
+#plotting
+
+
+ggplot(Number_of_Bursts_with_condition_av_sd, aes(x=day, colour = Condition))+
+  geom_line(aes(y=Bursts_average), size = 0.75)+
+  #geom_ribbon(aes(ymin=Firing_rate_average-standard_deviation, ymax=Firing_rate_average+standard_deviation, fill=Condition), color=NA, alpha=0.3)
+  geom_point(aes(y=NUmber_of_Bursts, shape = Condition))+
+  labs(x = "DIV",
+       y = "Number of Bursts",
+       title = "Number of Bursts")
+
+
+
+
+#SYNCHRONY---------------------------------------------------------------------------------------------------
+Synchrony_data <- raw_data %>%
+  filter(Well.Averages == "Synchrony Index") %>%
+  mutate(across(-c(1,2,27), as.numeric, na.rm = TRUE)) %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Synchrony_index")
+
+Condition <- raw_data %>%
+  filter(Well.Averages == "Treatment/ID") %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Condition")
+
+Synchrony_with_condition <- left_join(Synchrony_data, Condition, by = c("file_name", "well_ID", "day"))
+
+Synchrony_with_condition_av_sd <- Synchrony_with_condition %>%
+  group_by(Condition, day)%>%
+  mutate(Synchrony_average=mean(Synchrony_index),
+         standard_deviation=sd(Synchrony_index))
+
+
+#analysis
+
+shapiro_test_result <- shapiro.test(Synchrony_with_condition_av_sd$Synchrony_index)  
+
+
+Synch_analysis <- Synchrony_with_condition_av_sd %>% #if not normally distributed, then the parameter is converted to its logarithmic form 
+  drop_na(Synchrony_index) %>% #removes 0s
+  filter(is.finite(Synchrony_index)) 
+
+Synch_analysis$day <- as.factor(Synch_analysis$day)
+#ANOVA for all variables wanting to analyse
+Synch_ANOVA <- lm(Synchrony_index~ day * Condition, data = Synch_analysis)  
+
+Diagnostic_plot <- autoplot(Synch_ANOVA, smooth.colour = NA) 
+print(Diagnostic_plot)
+
+
+anova_result <- anova(Synch_ANOVA)
+summary_result <- summary(aov(Synch_ANOVA))
+
+
+print(anova_result)
+print(summary_result)
+
+
+
+#plotting
+
+ggplot(Synchrony_with_condition_av_sd, aes(x=day, colour = Condition))+
+  geom_line(aes(y=Synchrony_average), size = 0.75)+
+  #geom_ribbon(aes(ymin=Firing_rate_average-standard_deviation, ymax=Firing_rate_average+standard_deviation, fill=Condition), color=NA, alpha=0.3)
+  geom_point(aes(y=Synchrony_index, shape = Condition))+
+  labs(x = "DIV",
+       y = "Synchrony Index",
+       title = "Synchrony")
+
+
+#HEATMAP----------------------------------------------------------------------------------------------------
+
+
+heatmap_1 <- Synchrony_with_condition_av_sd[-c(1,2,4,5,6,9)] 
+
+heatmap_2 <- heatmap_1[!duplicated(heatmap_1$Synchrony_average), ]
+
+heatmap_final <- heatmap_2 %>%
+  pivot_wider(names_from = Condition , values_from = Synchrony_average) %>%
+  group_by(day) 
+
+heatmap_final_2 <- heatmap_final[-c(1)]
+row.names(heatmap_final_2) <- c("DIV9", "DIV13", "DIV14", "DIV15", "DIV16", "DIV17", "DIV18", "DIV19", "DIV20", "DIV21", "DIV22", "DIV23", "DIV24", "DIV25", "DIV26", "DIV27")
+
+pheatmap(as.matrix(heatmap_final_2), cluster_rows = FALSE, main="Synchrony Index)")
+
+
+
+#Number of active electrodes---------------------------------------------------------------------------------------------------
+
+Electrodes_data <- raw_data %>%
+  filter(Well.Averages == "Number of Active Electrodes") %>%
+  mutate(across(-c(1,2,27), as.numeric, na.rm = TRUE)) %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "NumberOfActiveElectrodes")
+
+Condition <- raw_data %>%
+  filter(Well.Averages == "Treatment/ID") %>%
+  pivot_longer(cols = c(3:26),
+               names_to = "well_ID",
+               values_to = "Condition")
+
+Electrodes_with_condition <- left_join(Electrodes_data, Condition, by = c("file_name", "well_ID", "day"))
+
+Electrodes_with_condition_av_sd <- Electrodes_with_condition %>%
+  group_by(Condition, day)%>%
+  mutate(Electrodes_average=mean(NumberOfActiveElectrodes),
+         standard_deviation=sd(NumberOfActiveElectrodes))
+
+
+
+ggplot(Electrodes_with_condition_av_sd, aes(x=day, colour = Condition))+
+  geom_line(aes(y=Electrodes_average), size = 0.75)+
+  #geom_ribbon(aes(ymin=Firing_rate_average-standard_deviation, ymax=Firing_rate_average+standard_deviation, fill=Condition), color=NA, alpha=0.3)
+  geom_point(aes(y=NumberOfActiveElectrodes, shape = Condition))+
+  labs(x = "DIV",
+       y = "Electrodes",
+       title = "Number of Active Electrodes")
+
+
